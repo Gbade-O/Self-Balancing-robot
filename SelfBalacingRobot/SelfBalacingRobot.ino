@@ -258,7 +258,7 @@ void ComputePID_Control( float angle){
   
   //Actuate Motor using timer2 only if the Error is greater than +/5 degrees . Else stop Motor 
 
-  if( abs( PID_error ) <=5 )
+  if( abs( PID_error ) >=5 )
   {
       TCNT2 = 0; //Start timer from 0 
       OCR2A = Stepper_delay; //Compare match set to stepper period 
