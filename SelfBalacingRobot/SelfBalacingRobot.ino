@@ -19,11 +19,17 @@ https://github.com/jrowberg/i2cdevlib/blob/master/Arduino/MPU6050/examples/MPU60
 #define Ki 0
 #define Kd 0
 #define Rad2deg 57.2958
+#define CW 1 
+#define CCW 0
+#define DRIVE_MIN 240  //This is the longest period , that will cause the driver to spin stepper motor. ( Based on current set-up)
+#define DRIVE_MAX 3  //Shortest period that DRV8825 can handle ( Fastest stepper motor speed ) 
 
 // MPU control/status vars
+MPU6050 mpu;
 bool dmpReady = false;  // set true if DMP init was successful
 uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
 uint8_t devStatus;      // return status after each device operation (0 = success, !0 = error)
+uint8_t mpuInterrupt;
 uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
@@ -37,13 +43,24 @@ VectorFloat gravity;    // [x, y, z]            gravity vector
 float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
 
+//PID variables 
+unsigned long currtime=0;
+ unsigned long prevtime=0;
+double elapsedtime;
+double PID_error,Error_Sum;
+double prevError;
+float setPoint;
+double rateError;
+
+//Motor Variables 
+volatile uint8_t direction; // 0 is clockwise , wh
 
 //Define functions 
 bool GyroSetUp();
 void dmpDataReady();
+void ComputePID_Control(float angle );
 
-//Define variables 
-MPU6050 mpu;
+
 
 
 void setup() {
@@ -66,7 +83,7 @@ pinMode(2,INPUT);
 dmpReady  = GyroSetup();
 
 //Configure LED as output 
-pinMode(LED_PIN,OUTPUT)
+pinMode(LED_PIN,OUTPUT);
 
 
 //Configure Timer2 to control Stepper Motor 
@@ -86,12 +103,12 @@ void loop() {
   // if Gyro calibration failed, don't try to do anything
   if (!dmpReady) return;
   
-  if ( mpuinterrupt ) { //New data has been received 
+  if ( mpuInterrupt ) { //New data has been received 
         
       mpuInterrupt = false;
-      mpuIntStatus = mpu.getStatus();  //Informs whether there is an overflow condition or usable data 
+      mpuIntStatus = mpu.getIntStatus();  //Informs whether there is an overflow condition or usable data 
       
-      fifocount = mpu.getFIFOCount(); 
+      fifoCount = mpu.getFIFOCount(); 
       
       //check for overflow (this should never happen unless our code is too inefficient)
       if ((mpuIntStatus & 0x10) || fifoCount== 1024) {
@@ -112,11 +129,7 @@ void loop() {
           mpu.dmpGetGravity(&gravity, &q);
           mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
-          /* Add in PID and Motor Control */
-            
-            
-            
-            }
+          ComputePID_Control( ypr[2] * Rad2deg); }
   
   
   }
@@ -132,7 +145,7 @@ void loop() {
 bool GyroSetup(){
   
   
-  uint8_t Gyro_status 
+  uint8_t Gyro_status ;
   bool dmpstatus = false; 
   //Functions to initialize Gryo and print status for troubleshooting 
   #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
@@ -207,4 +220,132 @@ void dmpDataReady(){
   //Digital interrupt triggered , set flag 
   mpuInterrupt = true;
 }
+  
+
+void ComputePID_Control( float angle){
+  
+  //Compute PID calculations 
+  currtime = millis();
+  elapsedtime = (double)(currtime - prevtime);
+  
+  
+  PID_error = setPoint - angle; //Compute instant PID Error , Kp
+  
+  
+  Error_Sum += PID_error * elapsedtime;  //Compute inntegral Ki 
+  rateError  = (PID_error - prevError) / elapsedtime; //Compute derivative , Kd 
+  
+  double PID_Value  = Kp*PID_error + Ki*Error_Sum + Kd*rateError; 
+  
+  prevError = PID_error;
+  prevtime = currtime;
+  
+  //determine and send Motor commands 
+  direction = (PID_Value < 0 ) ? ( CCW ) : ( CW ) ;//Based on orientatiation of fall , determine what direction to move motor 
+  
+  if( direction ) { //Set Direction pin accordingly , based on direction 
+    
+    digitalWrite(Dir,HIGH); //Moves motor in CW direction based on set-up. Prepare Pin for motor to move 
+    direction = -1; //Forces direction to be determined fresh each time motor will be actuated 
+  } else if( direction == 0) {
+    digitalWrite(Dir,LOW); //Moves motor in CCW direction based on set-up. Prepare Pin for motor to move 
+    direction = -1 ; //Forces direction to be determined fresh each time motor will be actuated 
+  }
+  
+  //Map PID output to value Motor driver understands 
+  double abs_PID = abs(PID_Value); //Needed incase there is a negative PID output 
+  double Stepper_delay = map(abs_PID,0,360,DRIVE_MIN,DRIVE_MAX);
+  
+  //Actuate Motor using timer2 only if the Error is greater than +/5 degrees . Else stop Motor 
+
+  if( abs( PID_error ) <=5 )
+  {
+      TCNT2 = 0; //Start timer from 0 
+      OCR2A = Stepper_delay; //Compare match set to stepper period 
+      TCCR2A = ( 1<< WGM21); //Set Timer Mode 
+      TCCR2B = (1<<CS22)|(1<<CS21); //Set Clock divider and Start clock 
+  } else {
+
+      //Stop Motor from spinning using Timer2 
+      TCCR2B &= 0;// same for TCCR2B
+      TCNT2 = 0;
+      
+  }
+
+  
+}
+  
+  
+  
+ISR(TIMER2_COMPA_vect)
+{
+  TCNT2 = 0;
+  digitalWrite(Step,HIGH);
+  delayMicroseconds(2);
+  digitalWrite(Step,LOW);
+}
+
+
+
+
+
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   
